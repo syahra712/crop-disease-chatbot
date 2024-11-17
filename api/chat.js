@@ -1,110 +1,127 @@
 const axios = require("axios");
 
 const handler = async (event, context) => {
-    const startTime = Date.now();  // Start time for performance tracking
+    // Vercel has a default timeout of 10 seconds for Hobby tier
+    const VERCEL_TIMEOUT = 10000;
+    const WIKIPEDIA_TIMEOUT = 3000;
+    const GEMINI_TIMEOUT = 5000;
+    
+    const startTime = Date.now();
 
     try {
-        // Extract question from the incoming request body
+        // Extract question and validate request
         const { question } = JSON.parse(event.body);
-
-        if (!question) {
-            // Handle case where the question is missing
+        if (!question?.trim()) {
             return {
                 statusCode: 400,
                 body: JSON.stringify({ message: "Error: No question provided" }),
             };
         }
 
-        console.log("Received question:", question); // Log the received question
+        // Create an AbortController for timeouts
+        const wikiController = new AbortController();
+        const geminiController = new AbortController();
 
+        // Initialize context data
         let contextData = null;
 
-        // Step 1: Try fetching context from Wikipedia
+        // Step 1: Try fetching context from Wikipedia with timeout
         try {
             const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(question)}&format=json`;
-            console.log("Searching Wikipedia with URL:", searchUrl); // Log the URL
-            const searchResponse = await axios.get(searchUrl, { timeout: 5000 }); // Set a timeout for the API call
+            
+            const searchResponse = await Promise.race([
+                axios.get(searchUrl, {
+                    signal: wikiController.signal,
+                    timeout: WIKIPEDIA_TIMEOUT
+                }),
+                new Promise((_, reject) => 
+                    setTimeout(() => {
+                        wikiController.abort();
+                        reject(new Error('Wikipedia search timeout'));
+                    }, WIKIPEDIA_TIMEOUT)
+                )
+            ]);
 
-            const searchResults = searchResponse.data.query.search;
-
-            if (searchResults && searchResults.length > 0) {
-                const pageTitle = searchResults[0].title.replace(" ", "_"); // Use the first search result
+            if (searchResponse?.data?.query?.search?.[0]) {
+                const pageTitle = encodeURIComponent(searchResponse.data.query.search[0].title);
                 const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${pageTitle}`;
-                console.log("Fetching summary from:", summaryUrl); // Log the summary URL
-                const summaryResponse = await axios.get(summaryUrl, { timeout: 5000 }); // Set a timeout for the API call
-                contextData = summaryResponse.data.extract || "No summary available.";
-                console.log("Wikipedia context:", contextData); // Log the fetched context
-            } else {
-                console.log("No relevant Wikipedia page found.");
+                
+                const summaryResponse = await axios.get(summaryUrl, {
+                    signal: wikiController.signal,
+                    timeout: WIKIPEDIA_TIMEOUT
+                });
+                
+                contextData = summaryResponse.data?.extract || null;
             }
-        } catch (wikipediaError) {
-            console.error("Wikipedia API error:", wikipediaError); // Log entire error object
-            contextData = "No context found from Wikipedia.";
+        } catch (error) {
+            console.warn("Wikipedia context fetch failed:", error.message);
+            // Continue without Wikipedia context
         }
 
-        // Step 2: If no context from Wikipedia, or the context is not sufficient, use the question directly.
-        if (!contextData) {
-            console.log("Using question directly for Gemini API.");
-            contextData = `Question: ${question}`;
+        // Validate Gemini API key
+        if (!process.env.REACT_APP_GEMINI_API_KEY) {
+            throw new Error("Gemini API key is missing");
         }
 
-        // Step 3: Generate answer using Gemini API
+        // Step 2: Call Gemini API with strict timeout
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
         
-        if (!process.env.REACT_APP_GEMINI_API_KEY) {
-            // Handle case where the Gemini API key is missing
-            console.error("Error: Gemini API key is not set in environment variables.");
-            return {
-                statusCode: 500,
-                body: JSON.stringify({ message: "Error: Gemini API key is missing" }),
-            };
-        }
+        const prompt = contextData 
+            ? `Answer the question about crop diseases using this context: ${contextData}. Question: ${question}`
+            : `Answer this question about crop diseases: ${question}`;
 
         const data = {
-            contents: [
-                {
-                    parts: [
-                        { 
-                            text: `Answer the question about crop diseases. If you don't know, give a general answer. Question: ${question}. Context: ${contextData}`
-                        },
-                    ],
-                },
-            ],
+            contents: [{
+                parts: [{ text: prompt }]
+            }]
         };
 
-        console.log("Sending request to Gemini API with data:", JSON.stringify(data, null, 2)); // Log the request payload
-        const geminiResponse = await axios.post(geminiUrl, data, {
-            headers: { "Content-Type": "application/json" },
-            timeout: 10000, // Set a timeout for the Gemini API call (10 seconds)
-        });
+        const geminiResponse = await Promise.race([
+            axios.post(geminiUrl, data, {
+                headers: { "Content-Type": "application/json" },
+                signal: geminiController.signal,
+                timeout: GEMINI_TIMEOUT
+            }),
+            new Promise((_, reject) => 
+                setTimeout(() => {
+                    geminiController.abort();
+                    reject(new Error('Gemini API timeout'));
+                }, GEMINI_TIMEOUT)
+            )
+        ]);
 
-        if (!geminiResponse.data || !geminiResponse.data.candidates || !geminiResponse.data.candidates[0]) {
-            // Handle case where Gemini API response is invalid or missing data
-            console.error("Error: Invalid response from Gemini API", geminiResponse.data);
-            return {
-                statusCode: 500,
-                body: JSON.stringify({ message: "Error: Invalid response from Gemini API" }),
-            };
+        if (!geminiResponse?.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+            throw new Error("Invalid response format from Gemini API");
         }
 
-        console.log("Gemini API response:", geminiResponse.data); // Log the response
-
         const answer = geminiResponse.data.candidates[0].content.parts[0].text;
+        const executionTime = Date.now() - startTime;
 
-        const endTime = Date.now();
-        console.log("Function execution time:", endTime - startTime, "ms");  // Log function execution time
+        console.log(`Request completed in ${executionTime}ms`);
 
-        // Return the response to Vercel
         return {
             statusCode: 200,
-            body: JSON.stringify({ answer }),
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'public, max-age=300' // Cache successful responses for 5 minutes
+            },
+            body: JSON.stringify({ 
+                answer,
+                executionTime 
+            })
         };
 
     } catch (error) {
-        console.error("Error occurred:", error); // Log the entire error object for more details
+        const errorMessage = error.message || "Internal server error";
+        console.error("Error:", errorMessage);
+        
         return {
-            statusCode: 500,
-            body: JSON.stringify({ message: "Error occurred, check logs for more details" }),
+            statusCode: error.response?.status || 500,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                error: errorMessage,
+                executionTime: Date.now() - startTime
+            })
         };
     }
 };
