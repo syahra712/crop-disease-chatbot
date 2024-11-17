@@ -1,9 +1,9 @@
 const axios = require("axios");
 
-module.exports = async function(event, context) {
-    try {
-        const startTime = Date.now();  // Start time for performance tracking
+exports.handler = async function(event, context) {
+    const startTime = Date.now();  // Start time for performance tracking
 
+    try {
         // Extract question from the incoming request body
         const { question } = JSON.parse(event.body);
 
@@ -23,7 +23,7 @@ module.exports = async function(event, context) {
         try {
             const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(question)}&format=json`;
             console.log("Searching Wikipedia with URL:", searchUrl); // Log the URL
-            const searchResponse = await axios.get(searchUrl);
+            const searchResponse = await axios.get(searchUrl, { timeout: 5000 }); // Set a timeout for the API call
 
             const searchResults = searchResponse.data.query.search;
 
@@ -31,14 +31,14 @@ module.exports = async function(event, context) {
                 const pageTitle = searchResults[0].title.replace(" ", "_"); // Use the first search result
                 const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${pageTitle}`;
                 console.log("Fetching summary from:", summaryUrl); // Log the summary URL
-                const summaryResponse = await axios.get(summaryUrl);
+                const summaryResponse = await axios.get(summaryUrl, { timeout: 5000 }); // Set a timeout for the API call
                 contextData = summaryResponse.data.extract || "No summary available.";
                 console.log("Wikipedia context:", contextData); // Log the fetched context
             } else {
                 console.log("No relevant Wikipedia page found.");
             }
         } catch (wikipediaError) {
-            console.error("Wikipedia API error:", wikipediaError.message);
+            console.error("Wikipedia API error:", wikipediaError); // Log entire error object
             contextData = "No context found from Wikipedia.";
         }
 
@@ -75,6 +75,7 @@ module.exports = async function(event, context) {
         console.log("Sending request to Gemini API with data:", JSON.stringify(data, null, 2)); // Log the request payload
         const geminiResponse = await axios.post(geminiUrl, data, {
             headers: { "Content-Type": "application/json" },
+            timeout: 10000, // Set a timeout for the Gemini API call (10 seconds)
         });
 
         if (!geminiResponse.data || !geminiResponse.data.candidates || !geminiResponse.data.candidates[0]) {
@@ -100,7 +101,7 @@ module.exports = async function(event, context) {
         };
 
     } catch (error) {
-        console.error("Error occurred:", error.message || error); // Log detailed error
+        console.error("Error occurred:", error); // Log the entire error object for more details
         return {
             statusCode: 500,
             body: JSON.stringify({ message: "Error occurred, check logs for more details" }),
