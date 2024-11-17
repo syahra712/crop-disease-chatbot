@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-exports.handler = async function(event, context) {
+const handler = async (event, context) => {
     const startTime = Date.now();  // Start time for performance tracking
 
     try {
@@ -108,3 +108,5 @@ exports.handler = async function(event, context) {
         };
     }
 };
+
+module.exports = handler;
