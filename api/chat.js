@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-exports.handler = async function(event, context) {
+module.exports = async function(event, context) {
     try {
         // Extract question from the incoming request body
         const { question } = JSON.parse(event.body);
