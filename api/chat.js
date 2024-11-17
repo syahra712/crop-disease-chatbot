@@ -1,69 +1,74 @@
 const axios = require("axios");
 
 const handler = async (event, context) => {
-    // Vercel has a default timeout of 10 seconds for Hobby tier
-    const VERCEL_TIMEOUT = 10000;
     const WIKIPEDIA_TIMEOUT = 3000;
     const GEMINI_TIMEOUT = 5000;
     
     const startTime = Date.now();
 
     try {
-        // Extract question and validate request
-        const { question } = JSON.parse(event.body);
-        if (!question?.trim()) {
+        // Safely parse the request body
+        let question;
+        try {
+            const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+            question = body?.question;
+        } catch (e) {
             return {
                 statusCode: 400,
-                body: JSON.stringify({ message: "Error: No question provided" }),
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    error: "Invalid request body",
+                    details: "Request body must be valid JSON with a 'question' field"
+                })
             };
         }
 
-        // Create an AbortController for timeouts
-        const wikiController = new AbortController();
-        const geminiController = new AbortController();
+        // Validate question
+        if (!question?.trim()) {
+            return {
+                statusCode: 400,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    error: "Missing question",
+                    details: "The 'question' field cannot be empty"
+                })
+            };
+        }
 
-        // Initialize context data
+        // Wikipedia context fetch
         let contextData = null;
-
-        // Step 1: Try fetching context from Wikipedia with timeout
         try {
             const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(question)}&format=json`;
-            
-            const searchResponse = await Promise.race([
-                axios.get(searchUrl, {
-                    signal: wikiController.signal,
-                    timeout: WIKIPEDIA_TIMEOUT
-                }),
-                new Promise((_, reject) => 
-                    setTimeout(() => {
-                        wikiController.abort();
-                        reject(new Error('Wikipedia search timeout'));
-                    }, WIKIPEDIA_TIMEOUT)
-                )
-            ]);
+            const searchResponse = await axios.get(searchUrl, { timeout: WIKIPEDIA_TIMEOUT });
 
             if (searchResponse?.data?.query?.search?.[0]) {
                 const pageTitle = encodeURIComponent(searchResponse.data.query.search[0].title);
                 const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${pageTitle}`;
-                
-                const summaryResponse = await axios.get(summaryUrl, {
-                    signal: wikiController.signal,
-                    timeout: WIKIPEDIA_TIMEOUT
-                });
-                
-                contextData = summaryResponse.data?.extract || null;
+                const summaryResponse = await axios.get(summaryUrl, { timeout: WIKIPEDIA_TIMEOUT });
+                contextData = summaryResponse.data?.extract;
             }
         } catch (error) {
-            console.warn("Wikipedia context fetch failed:", error.message);
-            // Continue without Wikipedia context
+            // Log but continue without Wikipedia context
+            console.warn("Wikipedia fetch failed:", {
+                message: error.message,
+                status: error.response?.status,
+                data: error.response?.data
+            });
         }
 
         // Validate Gemini API key
         if (!process.env.REACT_APP_GEMINI_API_KEY) {
-            throw new Error("Gemini API key is missing");
+            return {
+                statusCode: 500,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    error: "Configuration error",
+                    details: "Gemini API key is not configured"
+                })
+            };
         }
 
-        // Step 2: Call Gemini API with strict timeout
+        // Gemini API call
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
         
         const prompt = contextData 
@@ -76,50 +81,51 @@ const handler = async (event, context) => {
             }]
         };
 
-        const geminiResponse = await Promise.race([
-            axios.post(geminiUrl, data, {
-                headers: { "Content-Type": "application/json" },
-                signal: geminiController.signal,
+        try {
+            const geminiResponse = await axios.post(geminiUrl, data, {
+                headers: { 'Content-Type': 'application/json' },
                 timeout: GEMINI_TIMEOUT
-            }),
-            new Promise((_, reject) => 
-                setTimeout(() => {
-                    geminiController.abort();
-                    reject(new Error('Gemini API timeout'));
-                }, GEMINI_TIMEOUT)
-            )
-        ]);
+            });
 
-        if (!geminiResponse?.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-            throw new Error("Invalid response format from Gemini API");
+            const answer = geminiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            
+            if (!answer) {
+                throw new Error("Invalid response format from Gemini API");
+            }
+
+            return {
+                statusCode: 200,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Cache-Control': 'public, max-age=300'
+                },
+                body: JSON.stringify({
+                    answer,
+                    executionTime: Date.now() - startTime
+                })
+            };
+
+        } catch (error) {
+            // Handle Gemini API specific errors
+            return {
+                statusCode: error.response?.status || 500,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    error: "Gemini API error",
+                    details: error.message || "Failed to get response from Gemini API",
+                    executionTime: Date.now() - startTime
+                })
+            };
         }
 
-        const answer = geminiResponse.data.candidates[0].content.parts[0].text;
-        const executionTime = Date.now() - startTime;
-
-        console.log(`Request completed in ${executionTime}ms`);
-
-        return {
-            statusCode: 200,
-            headers: {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'public, max-age=300' // Cache successful responses for 5 minutes
-            },
-            body: JSON.stringify({ 
-                answer,
-                executionTime 
-            })
-        };
-
     } catch (error) {
-        const errorMessage = error.message || "Internal server error";
-        console.error("Error:", errorMessage);
-        
+        // Handle any other unexpected errors
         return {
-            statusCode: error.response?.status || 500,
+            statusCode: 500,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                error: errorMessage,
+            body: JSON.stringify({
+                error: "Internal server error",
+                details: error.message,
                 executionTime: Date.now() - startTime
             })
         };
