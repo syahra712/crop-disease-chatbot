@@ -1,3 +1,5 @@
+require('dotenv').config({ path: '/Users/admin/Desktop/crop-disease-chatbot/.env' }); // Specify the full path to the .env file
+
 const express = require("express");
 const bodyParser = require("body-parser");
 const axios = require("axios");
@@ -45,10 +47,6 @@ app.post("/chat", async (req, res) => {
 
         // Step 3: Generate answer using Gemini API
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
-
-        
-        // Provide clearer instructions and context for crop diseases
         const data = {
             contents: [
                 {
