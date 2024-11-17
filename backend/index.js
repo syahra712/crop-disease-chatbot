@@ -45,6 +45,7 @@ app.post("/chat", async (req, res) => {
 
         // Step 3: Generate answer using Gemini API
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.REACT_APP_GEMINI_API_KEY}`;
 
         
         // Provide clearer instructions and context for crop diseases
