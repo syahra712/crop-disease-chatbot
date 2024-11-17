@@ -2,6 +2,8 @@ const axios = require("axios");
 
 module.exports = async function(event, context) {
     try {
+        const startTime = Date.now();  // Start time for performance tracking
+
         // Extract question from the incoming request body
         const { question } = JSON.parse(event.body);
 
@@ -87,6 +89,9 @@ module.exports = async function(event, context) {
         console.log("Gemini API response:", geminiResponse.data); // Log the response
 
         const answer = geminiResponse.data.candidates[0].content.parts[0].text;
+
+        const endTime = Date.now();
+        console.log("Function execution time:", endTime - startTime, "ms");  // Log function execution time
 
         // Return the response to Vercel
         return {
