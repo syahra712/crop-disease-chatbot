@@ -1,4 +1,6 @@
 require('dotenv').config({ path: '/Users/admin/Desktop/crop-disease-chatbot/.env' }); // Specify the full path to the .env file
+// Add this log at the start of your file
+console.log("Gemini API Key from Environment:", process.env.REACT_APP_GEMINI_API_KEY);
 
 const express = require("express");
 const bodyParser = require("body-parser");
